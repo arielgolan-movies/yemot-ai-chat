@@ -9,11 +9,23 @@ const MODEL          = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const REC_DIR        = process.env.REC_DIR || '/9';         // שלוחה לשמירת ההקלטות
 const MAX_TURNS      = 20;                                   // כמה תורות לכל שיחה
 
-const SYSTEM_PROMPT = `אתה עוזר קולי חברותי בשיחת טלפון בעברית.
-ענה תמיד בעברית, במשפטים קצרים וטבעיים (עד 3 משפטים), בלי רשימות, אימוג'ים או סימנים מיוחדים.
+const SYSTEM_PROMPT = `אתה עוזר קולי בקו טלפון בעברית. רוב המתקשרים הם אנשים בלי סמארטפון, חלקם מבוגרים.
+כללים לתשובה (reply):
+- עברית פשוטה ויומיומית, כמו בשיחה עם שכן. בלי מילים לועזיות או מונחים טכניים, ואם חייבים, הסבר אותם במילים פשוטות.
+- קצר: 2 עד 3 משפטים קצרים בלבד, כי זה מוקרא בטלפון.
+- בלי קישורים, כתובות אתרים, רשימות, מספור, כוכביות, אימוג'ים או סימנים מיוחדים.
+- לעולם אל תפנה לאתר, לאפליקציה או לוואטסאפ. אם צריך מספר טלפון, אמור אותו ספרה ספרה.
+- אם השאלה רפואית, משפטית או כספית חשובה, תן הכוונה כללית והמלץ לפנות לרופא, לעורך דין או לגורם מוסמך.
+- אל תשאל שאלה בסוף התשובה, כי אחריה המתקשר שומע תפריט מקשים.
 מחזירים JSON בלבד: {"transcript": "מה שהמתקשר אמר", "reply": "התשובה שלך", "end": false}
 אם המתקשר רוצה לסיים (להתראות, ביי, תודה זהו), החזר end=true עם משפט פרידה קצר.
-אם ההקלטה ריקה או לא ברורה, בקש בנימוס שיחזור על דבריו.`;
+אם ההקלטה ריקה או לא ברורה, ב-reply בקש בנימוס שיקיש 1 וינסה לדבר שוב לאט וקרוב לטלפון.`;
+
+// הודעות הקו
+const MSG_WELCOME = 'שלום וברוכים הבאים לקו השאלות של הבינה המלאכותית אחרי הצליל אמרו את השאלה שלכם בקול ברור ובסיום הקישו סולמית אחרי כל תשובה תוכלו להקיש 1 לשאלה נוספת 2 לשמוע את התשובה שוב או 3 לסיום';
+const MSG_ASK     = 'אמרו את השאלה אחרי הצליל ובסיום הקישו סולמית';
+const MSG_MENU    = 'לשאלה נוספת הקישו 1 לשמוע את התשובה שוב הקישו 2 לסיום הקישו 3';
+const MSG_BYE     = 'תודה שהתקשרתם להתראות';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -53,30 +65,50 @@ const router = YemotRouter({
   }
 });
 
+async function record(call, prompt, turn) {
+  return call.read([{ type: 'text', data: prompt }], 'record', {
+    path: REC_DIR,
+    file_name: `${call.callId}_${turn}`,
+    no_confirm_menu: true,   // סולמית = אישור מיידי, בלי תפריט
+    min_length: 1,
+    max_length: 60,
+    removeInvalidChars: true
+  });
+}
+
+// משמיע את התשובה ואז תפריט: 1 שאלה נוספת, 2 שמיעה חוזרת, 3 סיום
+async function answerMenu(call, reply) {
+  let toPlay = [{ type: 'text', data: reply }, { type: 'text', data: MSG_MENU }];
+  for (let i = 0; i < 5; i++) {
+    const key = await call.read(toPlay, 'tap', {
+      max_digits: 1, min_digits: 1, digits_allowed: ['1', '2', '3'],
+      sec_wait: 10, removeInvalidChars: true
+    });
+    if (key === '2') { toPlay = [{ type: 'text', data: reply }, { type: 'text', data: MSG_MENU }]; continue; }
+    if (key === '3') return 'end';
+    if (key === '1') return 'ask';
+    toPlay = [{ type: 'text', data: MSG_MENU }];
+  }
+  return 'end';
+}
+
 router.get('/', async (call) => {
   const history = [];
-  let prompt = 'שלום, אני הבינה המלאכותית שלכם. דברו אחרי הצליל ובסיום הקישו סולמית';
+  let prompt = MSG_WELCOME;
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const recPath = await call.read([{ type: 'text', data: prompt }], 'record', {
-      path: REC_DIR,
-      file_name: `${call.callId}_${turn}`,
-      no_confirm_menu: true,   // סולמית = אישור מיידי, בלי תפריט
-      min_length: 1,
-      max_length: 40,
-      removeInvalidChars: true
-    });
-
+    const recPath = await record(call, prompt, turn);
     const audio = await downloadRecording(recPath);
     const { transcript, reply, end } = await askGemini(history, audio);
 
     history.push({ role: 'user',  parts: [{ text: transcript || '(לא ברור)' }] });
     history.push({ role: 'model', parts: [{ text: reply }] });
 
-    if (end) {
-      return call.id_list_message([{ type: 'text', data: clean(reply) }]);
-    }
-    prompt = clean(reply);
+    if (end) return call.id_list_message([{ type: 'text', data: clean(reply) }]);
+
+    const next = await answerMenu(call, clean(reply));
+    if (next === 'end') return call.id_list_message([{ type: 'text', data: MSG_BYE }]);
+    prompt = MSG_ASK;
   }
   return call.id_list_message([{ type: 'text', data: 'הגענו לסוף השיחה, תודה ולהתראות' }]);
 });
