@@ -5,7 +5,7 @@ import { GoogleGenAI } from '@google/genai';
 // ===== הגדרות (משתני סביבה ב-Render) =====
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;          // מפתח חינמי מ-Google AI Studio
 const YEMOT_TOKEN    = process.env.YEMOT_TOKEN || `${process.env.YEMOT_SYSTEM}:${process.env.YEMOT_PASSWORD}`;             // "מספר_מערכת:סיסמה"
-const MODEL          = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL          = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const REC_DIR        = process.env.REC_DIR || '/9';         // שלוחה לשמירת ההקלטות
 const MAX_TURNS      = 20;                                   // כמה תורות לכל שיחה
 
